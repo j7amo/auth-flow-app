@@ -1,6 +1,8 @@
+/* eslint-disable no-underscore-dangle */
 const crypto = require('crypto');
 const { StatusCodes } = require('http-status-codes');
 const User = require('../models/User');
+const Token = require('../models/Token');
 const CustomError = require('../errors');
 const {
   attachCookiesToResponse,
@@ -122,7 +124,47 @@ const login = async (req, res) => {
   // and only after successful email verification we create access token,
   // put it into cookie and send it back to the user for storing in the browser:
   const tokenUser = createTokenUser(user);
-  attachCookiesToResponse({ res, user: tokenUser });
+
+  // We want to create REFRESH token that will be used for refreshing access token.
+  // Why do we need a REFRESH TOKEN? For security reasons! With the help of it
+  // we can re-issue a short-term ACCESS TOKEN e.g. every 15 minutes. So that
+  // if it is somehow leaked it will expire shortly. And REFRESH token helps
+  // us set this flow securely and seamlessly (user doesn't even have to enter
+  // credentials every 15 minutes).
+  let refreshToken = '';
+  // before creating a new refresh token we should check if the user already
+  // has one active in the DB and use it instead:
+  const existingToken = await Token.findOne({ user: user._id });
+
+  if (existingToken) {
+    const { isValid } = existingToken;
+    if (!isValid) {
+      throw new CustomError.UnauthenticatedError('Invalid Credentials');
+    }
+    refreshToken = existingToken;
+    attachCookiesToResponse({ res, user: tokenUser, refreshToken });
+    res.status(StatusCodes.OK).json({ user: tokenUser });
+
+    return;
+  }
+  // If there's no refreshToken in the DB for the current user
+  // then we go the full cycle of token creation:
+  // To create REFRESH token we need to get all the needed data for the Token model:
+  refreshToken = crypto.randomBytes(40).toString('hex');
+  const userAgent = req.headers['user-agent']; // OR req.get('user-agent');
+  const { ip } = req;
+  const userToken = {
+    refreshToken,
+    userAgent,
+    ip,
+    user: user._id,
+  };
+
+  // and create the token in the DB
+  await Token.create(userToken);
+  // Then we want to check for existing access token
+
+  attachCookiesToResponse({ res, user: tokenUser, refreshToken });
 
   res.status(StatusCodes.OK).json({ user: tokenUser });
 };

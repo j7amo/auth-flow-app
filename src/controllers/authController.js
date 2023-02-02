@@ -8,6 +8,8 @@ const {
   attachCookiesToResponse,
   createTokenUser,
   sendVerificationEmail,
+  sendResetPasswordEmail,
+  createHash,
 } = require('../utils');
 
 // We are going to change the AUTH FLOW.
@@ -185,9 +187,95 @@ const logout = async (req, res) => {
   res.status(StatusCodes.OK).json({ msg: 'user logged out!' });
 };
 
+const forgotPassword = async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    throw new CustomError.BadRequestError('Please provide a valid email');
+  }
+
+  const user = await User.findOne({ email });
+
+  // Here is something interesting:
+  // We don't check if user DOES NOT EXIST and throw an error here.
+  // At the end of "forgotPassword" handler execution
+  // we send back the response with status code 200 and success message (even if there's no user).
+  // Why? Because if our app is attacked by some hacker, we do not want to give him a clue
+  // on whether the email is really in the DB or not so that he can keep guessing emails.
+  // 1) If the real registered user makes such a request then he will have no problems checking
+  // his email and find the link there.
+  // 2) In case of attacker doing the same thing, he will also get success response, then
+  // will try to check the email, and he won't find anything there! Which can throw him off
+  // and result in him making guesses on what is going on. And as a result
+  // this can make our app a little more secure.
+
+  // In reality, we are of course depending on user document from the DB:
+  if (user) {
+    // if there's a user in the DB, we want to create a passwordToken
+    const passwordToken = crypto.randomBytes(70).toString('hex');
+    // send email with reset link
+    await sendResetPasswordEmail({
+      name: user.name,
+      email: user.email,
+      passwordToken,
+      origin: 'http://localhost:3000',
+    });
+    // set expiration time for passwordToken:
+    const tenMinutes = 1000 * 60 * 10;
+    const passwordTokenExpirationDate = new Date(Date.now() + tenMinutes);
+
+    // add token and expiration time to user document:
+    user.passwordToken = createHash(passwordToken);
+    user.passwordTokenExpirationDate = passwordTokenExpirationDate;
+    await user.save();
+  }
+
+  res
+    .status(StatusCodes.OK)
+    .json({ msg: 'Please check your email for reset password link' });
+};
+
+const resetPassword = async (req, res) => {
+  // reset password functionality is set up on the FE such that FE sends
+  // a request with email, token, password in the body:
+  const { email, token, password } = req.body;
+
+  if (!email || !token || !password) {
+    throw new CustomError.BadRequestError(
+      'Please provide email, token, password',
+    );
+  }
+
+  const user = await User.findOne({ email });
+  // and once again we will not throw an error if user does not exist
+  // because we want to make app attackers' life difficult
+  if (user) {
+    const currentDate = new Date();
+
+    // when we found the user document in the DB, we want to check if passwordToken is
+    // correct and not expired:
+    if (
+      user.passwordToken === createHash(token)
+      && user.passwordTokenExpirationDate > currentDate
+    ) {
+      // and if so then apply the changes:
+      user.password = password;
+      user.passwordToken = null;
+      user.passwordTokenExpirationDate = null;
+      await user.save();
+    }
+  }
+
+  res
+    .status(StatusCodes.OK)
+    .json({ msg: 'Please check your email for reset password link' });
+};
+
 module.exports = {
   register,
   login,
   logout,
   verifyEmail,
+  forgotPassword,
+  resetPassword,
 };

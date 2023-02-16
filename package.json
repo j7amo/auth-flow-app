@@ -1,5 +1,5 @@
 {
-  "name": "auth-workflow",
+  "name": "auth-workflow-server",
   "version": "1.0.0",
   "description": "",
   "main": "src/app.js",
